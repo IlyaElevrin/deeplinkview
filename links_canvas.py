@@ -99,20 +99,29 @@ class InteractiveLinksCanvas(FigureCanvas):
         return {'links': len(self.links), 'self_links': self_links}
 
     def clear_artists(self):
-        for artist in self.link_artists.values():
-            artist.remove()
+        """Clear all artists from the canvas"""
+        for link_id in list(self.link_artists.keys()):
+            artist = self.link_artists[link_id]
+            if isinstance(artist, list):
+                for a in artist:
+                    a.remove()
+            else:
+                artist.remove()
+        self.link_artists.clear()
+        
         for artist in self.text_artists.values():
             artist.remove()
-        self.link_artists.clear()
         self.text_artists.clear()
+        
         self.ax.clear()
         self.ax.axis('off')
 
     def apply_layout(self, layout_type):
+        """Apply the specified layout to the graph"""
         if not self.links:
             return
         
-        #create a graph where links are nodes and references are edges
+        # Create a graph where links are nodes and references are edges
         G = nx.DiGraph()
         G.add_nodes_from(self.links.keys())
         
@@ -122,16 +131,20 @@ class InteractiveLinksCanvas(FigureCanvas):
             if link_data['to'] in self.links:
                 G.add_edge(link_id, link_data['to'])
         
-        #calculate layout
-        layouts = {
-            "spring": nx.spring_layout(G, k=0.5, iterations=100),
-            "circular": nx.circular_layout(G),
-            "random": nx.random_layout(G),
-            "kamada_kawai": nx.kamada_kawai_layout(G),
-            "spectral": nx.spectral_layout(G)
-        }
+        # Calculate layout with try-except for fallback
+        try:
+            layouts = {
+                "spring": nx.spring_layout(G, k=0.5, iterations=100),
+                "circular": nx.circular_layout(G),
+                "random": nx.random_layout(G),
+                "kamada_kawai": nx.kamada_kawai_layout(G),
+                "spectral": nx.spectral_layout(G)
+            }
+            self.link_positions = layouts.get(layout_type, nx.spring_layout(G))
+        except Exception as e:
+            print(f"Error applying {layout_type} layout: {e}")
+            self.link_positions = nx.spring_layout(G)
         
-        self.link_positions = layouts.get(layout_type, nx.spring_layout(G))
         self.clear_artists()
         self.create_artists()
         self.reset_view()
@@ -182,9 +195,8 @@ class InteractiveLinksCanvas(FigureCanvas):
         )
         self.ax.add_patch(arrow)
         
-        #сохраняем все части для последующего выделения
-        self.link_artists[link_id] = [loop, arrow]
-        return loop
+        # Возвращаем список художников
+        return [loop, arrow]
 
     def _draw_regular_link(self, link_id, from_id, to_id):
         """соединения между всеми видами связи"""
@@ -320,15 +332,23 @@ class InteractiveLinksCanvas(FigureCanvas):
     def update_artists(self):
         """Update visual properties based on interaction state"""
         for link_id, artist in self.link_artists.items():
-            color = self.self_link_color if self.links[link_id]['from'] == link_id else self.link_color
+            color = self.self_link_color if self.links[link_id]['from'] == self.links[link_id]['to'] else self.link_color
             
             if link_id == self.hovered_link or link_id == self.selected_link:
                 color = self.highlight_color
             
-            if isinstance(artist, Circle):
-                artist.set_facecolor(color)
+            # Handle both single artists and lists of artists (for self-links)
+            if isinstance(artist, (list, tuple)):
+                for a in artist:
+                    if hasattr(a, 'set_color'):
+                        a.set_color(color)
+                    elif hasattr(a, 'set_facecolor'):  # for circles
+                        a.set_facecolor(color)
             else:
-                artist.set_color(color)
+                if hasattr(artist, 'set_color'):
+                    artist.set_color(color)
+                elif hasattr(artist, 'set_facecolor'):  #for circles
+                    artist.set_facecolor(color)
         
         self.draw()
 
@@ -494,32 +514,35 @@ class InteractiveLinksCanvas(FigureCanvas):
         if link_id not in self.link_artists:
             return
         
+        #remove old artist(s)
         artist = self.link_artists[link_id]
+        if isinstance(artist, list):
+            for a in artist:
+                a.remove()
+        else:
+            artist.remove()
+        
         link_data = self.links[link_id]
         from_id = link_data['from']
         to_id = link_data['to']
-    
-        # Remove old artist
-        artist.remove()
-    
-        #create new artist at updated position
-        if from_id == link_id and to_id == link_id:  #self-link
-            new_artist = self._draw_self_link(link_id, *self.link_positions[link_id])
-        elif from_id is not None and to_id is not None:  #regular link
-            from_pos = self.link_positions.get(from_id, (0, 0))
-            to_pos = self.link_positions.get(to_id, (0, 0))
-            new_artist = self._draw_regular_link(link_id, from_pos, to_pos)
-        else:  #link as node
+        
+        # create new artist at updated position
+        if from_id == to_id == link_id:  # self-link (loop)
+            loop, arrow = self._draw_self_link(link_id, *self.link_positions[link_id])
+            self.link_artists[link_id] = [loop, arrow]
+        elif from_id is not None and to_id is not None:  # regular link
+            new_artist = self._draw_regular_link(link_id, from_id, to_id)
+            self.link_artists[link_id] = new_artist
+        else:  # link as node
             new_artist = self._draw_link_as_node(link_id, *self.link_positions[link_id])
-    
-        self.link_artists[link_id] = new_artist
-    
-        #update text position
+            self.link_artists[link_id] = new_artist
+        
+        # update text position if exists
         if link_id in self.text_artists:
             self.text_artists[link_id].set_position(self.link_positions[link_id])
 
     def _get_connection_point(self, source_pos, target_id):
-        """Get the best connection point for a link to a target"""
+        """get the best connection point for a link to a target"""
         if target_id not in self.link_positions:
             return self.link_positions.get(target_id, (0, 0))
     
@@ -539,18 +562,3 @@ class InteractiveLinksCanvas(FigureCanvas):
     
         #regular node connection
         return target_pos
-
-    
-if __name__ == "__main__":
-    #test with sample data
-    import pandas as pd
-    data = {
-        'id': [1, 2, 3, 4, 5],
-        'from': [1, 1, 2, 3, 4],
-        'to': [1, 2, 3, 4, 1]
-    }
-    df = pd.DataFrame(data)
-    
-    viz = LinksVisualizer()
-    viz.visualize_from_dataframe(df)
-    plt.show()
